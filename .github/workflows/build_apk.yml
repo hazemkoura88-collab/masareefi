@@ -34,6 +34,12 @@ jobs:
           flutter pub add sqflite path intl permission_handler crypto
           flutter pub add flutter_localizations --sdk=flutter
 
+      - name: Bump compileSdk to 37
+        run: |
+          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 37/' android/app/build.gradle.kts
+          sed -i 's/compileSdk[[:space:]]*=[[:space:]]*[0-9]\+/compileSdk = 37/' android/app/build.gradle.kts
+          cat android/app/build.gradle.kts | grep compileSdk
+
       - name: Configure Android Permissions
         run: |
           mkdir -p android/app/src/main/res/values
