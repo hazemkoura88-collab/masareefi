@@ -1,24 +1,452 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <uses-permission android:name="android.permission.RECEIVE_SMS"/>
-    <uses-permission android:name="android.permission.READ_SMS"/>
-    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
-    <uses-permission android:name="android.permission.USE_FINGERPRINT"/>
+name: Build Flutter APK
 
-    <application
-        android:label="Ù…ØµØ§Ø±ÙŠÙÙŠ"
-        android:icon="@mipmap/ic_launcher">
-        <activity
-            android:name=".MainActivity"
-            android:exported="true"
-            android:launchMode="singleTop"
-            android:theme="@style/LaunchTheme"
-            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
-            android:hardwareAccelerated="true"
-            android:windowSoftInputMode="adjustResize">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN"/>
-                <category android:name="android.intent.category.LAUNCHER"/>
-            </intent-filter>
-        </activity>
-    </application>
-</manifest>
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Setup Fresh Clean Flutter Project
+        run: |
+          rm -rf lib android pubspec.yaml pubspec.lock .github/workflows/pubspec.yaml
+          flutter create --org com.masareefi --platforms android .
+
+      - name: Add Required Dependencies
+        run: |
+          flutter pub add sqflite path intl permission_handler crypto
+          flutter pub add flutter_localizations --sdk=flutter
+
+      - name: Configure Android Permissions
+        run: |
+          mkdir -p android/app/src/main/res/values
+
+          # Write the Arabic app name via base64 to guarantee correct UTF-8 bytes,
+          # regardless of the runner's locale/encoding (avoids the mojibake issue).
+          echo "2YXYtdin2LHZitmB2Yo=" | base64 -d > /tmp/app_name.txt
+          APP_NAME=$(cat /tmp/app_name.txt)
+
+          cat << EOF > android/app/src/main/res/values/strings.xml
+          <resources>
+              <string name="app_name">$APP_NAME</string>
+          </resources>
+          EOF
+
+          cat << 'EOF' > android/app/src/main/AndroidManifest.xml
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.RECEIVE_SMS"/>
+              <uses-permission android:name="android.permission.READ_SMS"/>
+              <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
+              <uses-permission android:name="android.permission.USE_FINGERPRINT"/>
+
+              <application
+                  android:label="@string/app_name"
+                  android:icon="@mipmap/ic_launcher">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTop"
+                      android:theme="@style/LaunchTheme"
+                      android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+                      android:hardwareAccelerated="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+      - name: Write Database Helper
+        run: |
+          cat << 'EOF' > lib/database_helper.dart
+          import 'dart:async';
+          import 'package:path/path.dart';
+          import 'package:sqflite/sqflite.dart';
+
+          class Expense {
+            final int? id;
+            final double amount;
+            final String merchant;
+            final DateTime date;
+            final String cardLast4;
+            final String type;
+            final String category;
+            final String smsHash;
+
+            Expense({
+              this.id,
+              required this.amount,
+              required this.merchant,
+              required this.date,
+              required this.cardLast4,
+              required this.type,
+              required this.category,
+              required this.smsHash,
+            });
+
+            Map<String, dynamic> toMap() {
+              return {
+                'id': id,
+                'amount': amount,
+                'merchant': merchant,
+                'date': date.toIso8601String(),
+                'cardLast4': cardLast4,
+                'type': type,
+                'category': category,
+                'smsHash': smsHash,
+              };
+            }
+
+            factory Expense.fromMap(Map<String, dynamic> map) {
+              return Expense(
+                id: map['id'],
+                amount: map['amount'],
+                merchant: map['merchant'],
+                date: DateTime.parse(map['date']),
+                cardLast4: map['cardLast4'],
+                type: map['type'],
+                category: map['category'],
+                smsHash: map['smsHash'],
+              );
+            }
+          }
+
+          class DatabaseHelper {
+            static final DatabaseHelper instance = DatabaseHelper._init();
+            static Database? _database;
+
+            DatabaseHelper._init();
+
+            Future<Database> get database async {
+              if (_database != null) return _database!;
+              _database = await _initDB('masareefi.db');
+              return _database!;
+            }
+
+            Future<Database> _initDB(String filePath) async {
+              final dbPath = await getDatabasesPath();
+              final path = join(dbPath, filePath);
+
+              return await openDatabase(
+                path,
+                version: 1,
+                onCreate: _createDB,
+              );
+            }
+
+            Future _createDB(Database db, int version) async {
+              await db.execute('''
+                CREATE TABLE expenses (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  amount REAL NOT NULL,
+                  merchant TEXT NOT NULL,
+                  date TEXT NOT NULL,
+                  cardLast4 TEXT NOT NULL,
+                  type TEXT NOT NULL,
+                  category TEXT NOT NULL,
+                  smsHash TEXT UNIQUE NOT NULL
+                )
+              ''');
+            }
+
+            Future<bool> insertExpense(Expense expense) async {
+              final db = await instance.database;
+              try {
+                await db.insert('expenses', expense.toMap(), conflictAlgorithm: ConflictAlgorithm.fail);
+                return true;
+              } catch (e) {
+                return false;
+              }
+            }
+
+            Future<List<Expense>> getAllExpenses() async {
+              final db = await instance.database;
+              final result = await db.query('expenses', orderBy: 'date DESC');
+              return result.map((json) => Expense.fromMap(json)).toList();
+            }
+          }
+          EOF
+
+      - name: Write AlRajhi Parser
+        run: |
+          cat << 'EOF' > lib/alrajhi_parser.dart
+          import 'package:crypto/crypto.dart';
+          import 'dart:convert';
+
+          class TransactionParsed {
+            final double amount;
+            final String merchant;
+            final DateTime date;
+            final String cardLast4;
+            final String type;
+            final String category;
+            final String smsHash;
+
+            TransactionParsed({
+              required this.amount,
+              required this.merchant,
+              required this.date,
+              required this.cardLast4,
+              required this.type,
+              required this.category,
+              required this.smsHash,
+            });
+          }
+
+          class AlRajhiParser {
+            static TransactionParsed? parseSMS(String body, DateTime smsTime) {
+              if (!body.contains('الراجحي') && !body.contains('مبلغ') && !body.contains('بطاقة')) {
+                return null;
+              }
+
+              double amount = 0.0;
+              String merchant = 'غير محدد';
+              String cardLast4 = '0000';
+              String type = 'شراء';
+
+              RegExp amountReg = RegExp(r'(?:بقيمة|بمبلغ)\s+([0-9]+(?:\.[0-9]+)?)\s*(?:SAR|ر.س)?');
+              var amountMatch = amountReg.firstMatch(body);
+              if (amountMatch != null) {
+                amount = double.tryParse(amountMatch.group(1) ?? '0') ?? 0.0;
+              } else {
+                return null;
+              }
+
+              RegExp cardReg = RegExp(r'\(([0-9]{4})\)');
+              var cardMatch = cardReg.firstMatch(body);
+              if (cardMatch != null) {
+                cardLast4 = cardMatch.group(1) ?? '0000';
+              }
+
+              if (body.contains('شراء') || body.contains('مدى')) {
+                type = 'شراء';
+                RegExp merchantReg = RegExp(r'لدى\s+([^\n\r]+?)(?=\s+في|\s+بقيمة|\.$|$)');
+                var mMatch = merchantReg.firstMatch(body);
+                if (mMatch != null) merchant = mMatch.group(1)!.trim();
+              } else if (body.contains('سحب نقدي')) {
+                type = 'سحب';
+                merchant = 'صراف آلي';
+              } else if (body.contains('تحويل')) {
+                type = 'تحويلات';
+                merchant = 'تحويل صادر';
+              }
+
+              String category = _categorize(merchant, body);
+              String smsHash = md5.convert(utf8.encode(body + smsTime.toString())).toString();
+
+              return TransactionParsed(
+                amount: amount,
+                merchant: merchant,
+                date: smsTime,
+                cardLast4: cardLast4,
+                type: type,
+                category: category,
+                smsHash: smsHash,
+              );
+            }
+
+            static String _categorize(String merchant, String body) {
+              String text = (merchant + " " + body).toLowerCase();
+
+              if (text.contains('قهوة') || text.contains('كافيه') || text.contains('starbucks') || text.contains('barns')) return 'قهوة';
+              if (text.contains('مطعم') || text.contains('mcdonalds') || text.contains('albaik')) return 'مطاعم';
+              if (text.contains('بنزين') || text.contains('الدريس') || text.contains('ساسكو')) return 'بنزين';
+              if (text.contains('بندة') || text.contains('العثيم') || text.contains('سوبرماركت')) return 'سوبر ماركت';
+              if (text.contains('فاتورة') || text.contains('stc') || text.contains('موبايلي')) return 'فواتير';
+              if (text.contains('تحويل')) return 'تحويلات';
+              if (text.contains('amazon') || text.contains('noon')) return 'تسوق';
+              return 'أخرى';
+            }
+          }
+          EOF
+
+      - name: Write Application Main Code
+        run: |
+          cat << 'EOF' > lib/main.dart
+          import 'package:flutter/material.dart';
+          import 'package:flutter_localizations/flutter_localizations.dart';
+          import 'package:intl/intl.dart';
+
+          import 'database_helper.dart';
+          import 'alrajhi_parser.dart';
+
+          void main() {
+            WidgetsFlutterBinding.ensureInitialized();
+            runApp(const MasareefiApp());
+          }
+
+          class MasareefiApp extends StatefulWidget {
+            const MasareefiApp({super.key});
+
+            static _MasareefiAppState? of(BuildContext context) =>
+                context.findAncestorStateOfType<_MasareefiAppState>();
+
+            @override
+            State<MasareefiApp> createState() => _MasareefiAppState();
+          }
+
+          class _MasareefiAppState extends State<MasareefiApp> {
+            ThemeMode _themeMode = ThemeMode.system;
+
+            void toggleTheme() {
+              setState(() {
+                _themeMode = _themeMode == ThemeMode.light ? ThemeMode.dark : ThemeMode.light;
+              });
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                title: 'مصاريفي',
+                debugShowCheckedModeBanner: false,
+                locale: const Locale('ar', 'SA'),
+                supportedLocales: const [Locale('ar', 'SA')],
+                localizationsDelegates: const [
+                  GlobalMaterialLocalizations.delegate,
+                  GlobalWidgetsLocalizations.delegate,
+                  GlobalCupertinoLocalizations.delegate,
+                ],
+                themeMode: _themeMode,
+                theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.teal, brightness: Brightness.light),
+                darkTheme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.teal, brightness: Brightness.dark),
+                home: const HomeScreen(),
+              );
+            }
+          }
+
+          class HomeScreen extends StatefulWidget {
+            const HomeScreen({super.key});
+
+            @override
+            State<HomeScreen> createState() => _HomeScreenState();
+          }
+
+          class _HomeScreenState extends State<HomeScreen> {
+            List<Expense> _expenses = [];
+            bool _isLoading = true;
+
+            @override
+            void initState() {
+              super.initState();
+              _loadData();
+            }
+
+            Future<void> _loadData() async {
+              final data = await DatabaseHelper.instance.getAllExpenses();
+              setState(() {
+                _expenses = data;
+                _isLoading = false;
+              });
+            }
+
+            double get _todayExpense {
+              DateTime now = DateTime.now();
+              return _expenses
+                  .where((e) => e.date.year == now.year && e.date.month == now.month && e.date.day == now.day)
+                  .fold(0.0, (sum, item) => sum + item.amount);
+            }
+
+            double get _monthExpense {
+              DateTime now = DateTime.now();
+              return _expenses
+                  .where((e) => e.date.year == now.year && e.date.month == now.month)
+                  .fold(0.0, (sum, item) => sum + item.amount);
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(
+                  title: const Text('مصاريفي'),
+                  actions: [
+                    IconButton(
+                      icon: const Icon(Icons.brightness_6),
+                      onPressed: () => MasareefiApp.of(context)?.toggleTheme(),
+                    ),
+                  ],
+                ),
+                body: _isLoading
+                    ? const Center(child: CircularProgressIndicator())
+                    : RefreshIndicator(
+                        onRefresh: _loadData,
+                        child: ListView(
+                          padding: const EdgeInsets.all(16),
+                          children: [
+                            Row(
+                              children: [
+                                _buildStatCard('اليوم', '$_todayExpense SAR', Colors.orange),
+                                const SizedBox(width: 8),
+                                _buildStatCard('الشهر', '$_monthExpense SAR', Colors.teal),
+                              ],
+                            ),
+                            const SizedBox(height: 20),
+                            const Text('سجل العمليات', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                            const SizedBox(height: 10),
+                            if (_expenses.isEmpty)
+                              const Padding(
+                                padding: EdgeInsets.all(32.0),
+                                child: Center(
+                                  child: Text('لا توجد عمليات مسجلة بعد', style: TextStyle(color: Colors.grey)),
+                                ),
+                              )
+                            else
+                              ..._expenses.map((item) => Card(
+                                    child: ListTile(
+                                      title: Text(item.merchant, style: const TextStyle(fontWeight: FontWeight.bold)),
+                                      subtitle: Text(DateFormat('yyyy/MM/dd HH:mm').format(item.date)),
+                                      trailing: Text('${item.amount} SAR', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.redAccent)),
+                                    ),
+                                  )),
+                          ],
+                        ),
+                      ),
+              );
+            }
+
+            Widget _buildStatCard(String title, String value, Color color) {
+              return Expanded(
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(color: color.withOpacity(0.15), borderRadius: BorderRadius.circular(12)),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title, style: TextStyle(color: color, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 6),
+                      Text(value, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color)),
+                    ],
+                  ),
+                ),
+              );
+            }
+          }
+          EOF
+
+      - name: Build Release APK
+        run: flutter build apk --release --no-tree-shake-icons
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: masareefi-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
