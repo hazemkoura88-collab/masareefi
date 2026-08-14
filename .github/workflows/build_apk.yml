@@ -24,6 +24,9 @@ jobs:
         with:
           channel: 'stable'
 
+      - name: Generate Android Native Files
+        run: flutter create . --org com.masareefi --platforms android
+
       - name: Get Dependencies
         run: flutter pub get
 
