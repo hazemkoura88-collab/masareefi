@@ -1,0 +1,296 @@
+import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:telephony/telephony.dart';
+
+import 'database_helper.dart';
+import 'alrajhi_parser.dart';
+import 'export_helper.dart';
+import 'backup_helper.dart';
+import 'reports_screen.dart';
+import 'settings_screen.dart';
+
+class HomeScreen extends StatefulWidget {
+  final VoidCallback onToggleTheme;
+  const HomeScreen({super.key, required this.onToggleTheme});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  List<Expense> _expenses = [];
+  List<Expense> _filteredExpenses = [];
+  bool _isLoading = true;
+  String _selectedCategory = 'الكل';
+  String _searchQuery = '';
+  DateTimeRange? _selectedDateRange;
+  final Telephony telephony = Telephony.instance;
+  int _navIndex = 0; // 0=الرئيسية 1=التقارير 2=الإعدادات
+
+  final List<String> _categories = [
+    'الكل', 'مطاعم', 'قهوة', 'بنزين', 'سوبر ماركت', 'تسوق', 'تحويلات', 'فواتير', 'أخرى'
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadData();
+    _requestSMSPermissions();
+  }
+
+  Future<void> _loadData() async {
+    final data = await DatabaseHelper.instance.getAllExpenses();
+    setState(() {
+      _expenses = data;
+      _applyFilters();
+      _isLoading = false;
+    });
+  }
+
+  Future<void> _requestSMSPermissions() async {
+    var status = await Permission.sms.request();
+    if (status.isGranted) _syncSMS();
+  }
+
+  Future<void> _syncSMS() async {
+    List<SmsMessage> messages = await telephony.getInboxSms(
+      columns: [SmsColumn.BODY, SmsColumn.DATE],
+      sortOrder: [OrderBy(SmsColumn.DATE, sort: Sort.DESC)],
+    );
+
+    int newAdded = 0;
+    for (var msg in messages) {
+      if (msg.body != null) {
+        DateTime date = DateTime.fromMillisecondsSinceEpoch(
+            msg.date ?? DateTime.now().millisecondsSinceEpoch);
+        var parsed = AlRajhiParser.parseSMS(msg.body!, date);
+        if (parsed != null) {
+          Expense exp = Expense(
+            amount: parsed.amount,
+            merchant: parsed.merchant,
+            date: parsed.date,
+            cardLast4: parsed.cardLast4,
+            type: parsed.type,
+            category: parsed.category,
+            smsHash: parsed.smsHash,
+          );
+          bool inserted = await DatabaseHelper.instance.insertExpense(exp);
+          if (inserted) newAdded++;
+        }
+      }
+    }
+
+    if (newAdded > 0) {
+      _loadData();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('تم استيراد $newAdded عملية جديدة')),
+        );
+      }
+    }
+  }
+
+  void _applyFilters() {
+    setState(() {
+      _filteredExpenses = _expenses.where((e) {
+        bool matchesSearch = e.merchant.toLowerCase().contains(_searchQuery.toLowerCase()) ||
+            e.category.contains(_searchQuery);
+        bool matchesCategory = _selectedCategory == 'الكل' || e.category == _selectedCategory;
+        bool matchesDate = _selectedDateRange == null ||
+            (e.date.isAfter(_selectedDateRange!.start) &&
+                e.date.isBefore(_selectedDateRange!.end.add(const Duration(days: 1))));
+        return matchesSearch && matchesCategory && matchesDate;
+      }).toList();
+    });
+  }
+
+  // ── الإحصائيات: تم إصلاح حساب الأسبوع الناقص وربط القيم الفعلية بالبطاقات ──
+  double get _todayExpense {
+    DateTime now = DateTime.now();
+    return _expenses
+        .where((e) => e.date.year == now.year && e.date.month == now.month && e.date.day == now.day)
+        .fold(0.0, (sum, item) => sum + item.amount);
+  }
+
+  double get _weekExpense {
+    DateTime cutoff = DateTime.now().subtract(const Duration(days: 7));
+    return _expenses.where((e) => e.date.isAfter(cutoff)).fold(0.0, (sum, item) => sum + item.amount);
+  }
+
+  double get _monthExpense {
+    DateTime now = DateTime.now();
+    return _expenses
+        .where((e) => e.date.year == now.year && e.date.month == now.month)
+        .fold(0.0, (sum, item) => sum + item.amount);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: IndexedStack(
+          index: _navIndex,
+          children: [
+            _buildHomeTab(),
+            ReportsScreen(expenses: _expenses),
+            SettingsScreen(
+              onToggleTheme: widget.onToggleTheme,
+              onExportExcel: () async {
+                await ExportHelper.exportToExcel(_filteredExpenses);
+                if (mounted) {
+                  ScaffoldMessenger.of(context)
+                      .showSnackBar(const SnackBar(content: Text('تم التصدير لملف Excel')));
+                }
+              },
+              onExportPdf: () => ExportHelper.exportToPdf(_filteredExpenses),
+              onBackup: () async {
+                await BackupHelper.createBackup();
+                if (mounted) {
+                  ScaffoldMessenger.of(context)
+                      .showSnackBar(const SnackBar(content: Text('تم إنشاء النسخة الاحتياطية')));
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _navIndex,
+        onDestinationSelected: (i) => setState(() => _navIndex = i),
+        destinations: const [
+          NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: 'الرئيسية'),
+          NavigationDestination(icon: Icon(Icons.bar_chart_outlined), selectedIcon: Icon(Icons.bar_chart), label: 'التقارير'),
+          NavigationDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: 'الإعدادات'),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHomeTab() {
+    return RefreshIndicator(
+      onRefresh: _loadData,
+      child: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('مصاريفي', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                    IconButton(icon: const Icon(Icons.sync), onPressed: _syncSMS, tooltip: 'مزامنة'),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    _buildStatCard('اليوم', _todayExpense, Colors.orange),
+                    const SizedBox(width: 8),
+                    _buildStatCard('الأسبوع', _weekExpense, Colors.purple),
+                    const SizedBox(width: 8),
+                    _buildStatCard('الشهر', _monthExpense, Colors.teal),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                TextField(
+                  onChanged: (val) {
+                    _searchQuery = val;
+                    _applyFilters();
+                  },
+                  decoration: InputDecoration(
+                    hintText: 'بحث باسم التاجر أو التصنيف...',
+                    prefixIcon: const Icon(Icons.search),
+                    suffixIcon: IconButton(
+                      icon: const Icon(Icons.date_range),
+                      onPressed: () async {
+                        final picked = await showDateRangePicker(
+                          context: context,
+                          firstDate: DateTime(2020),
+                          lastDate: DateTime.now(),
+                        );
+                        if (picked != null) {
+                          setState(() => _selectedDateRange = picked);
+                          _applyFilters();
+                        }
+                      },
+                    ),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  height: 40,
+                  child: ListView.builder(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: _categories.length,
+                    itemBuilder: (context, i) {
+                      final cat = _categories[i];
+                      final isSelected = cat == _selectedCategory;
+                      return Padding(
+                        padding: const EdgeInsets.only(left: 8.0),
+                        child: ChoiceChip(
+                          label: Text(cat),
+                          selected: isSelected,
+                          onSelected: (selected) {
+                            if (selected) {
+                              setState(() => _selectedCategory = cat);
+                              _applyFilters();
+                            }
+                          },
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('العمليات', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    Text('${_filteredExpenses.length} عملية', style: const TextStyle(color: Colors.grey)),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                if (_filteredExpenses.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 40),
+                    child: Center(child: Text('لا توجد عمليات مطابقة', style: TextStyle(color: Colors.grey))),
+                  )
+                else
+                  ..._filteredExpenses.map((item) => Card(
+                        margin: const EdgeInsets.symmetric(vertical: 4),
+                        child: ListTile(
+                          title: Text(item.merchant, style: const TextStyle(fontWeight: FontWeight.bold)),
+                          subtitle: Text('${item.category} • ${item.date.year}/${item.date.month.toString().padLeft(2, '0')}/${item.date.day.toString().padLeft(2, '0')}'),
+                          trailing: Text('${item.amount.toStringAsFixed(2)} SAR',
+                              style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.redAccent, fontSize: 15)),
+                        ),
+                      )),
+              ],
+            ),
+    );
+  }
+
+  Widget _buildStatCard(String title, double value, Color color) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+            color: color.withOpacity(0.12),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: color.withOpacity(0.3))),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 13)),
+            const SizedBox(height: 6),
+            FittedBox(
+              child: Text('${value.toStringAsFixed(2)} SAR',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: color)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
