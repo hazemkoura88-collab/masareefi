@@ -60,7 +60,9 @@ jobs:
                   applyJvmTarget()
               } else {
                   afterEvaluate {
-                      applyJvmTarget()
+                      afterEvaluate {
+                          applyJvmTarget()
+                      }
                   }
               }
           }
