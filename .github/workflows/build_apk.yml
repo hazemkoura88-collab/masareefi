@@ -36,6 +36,19 @@ jobs:
 
       - name: Configure Android Permissions
         run: |
+          mkdir -p android/app/src/main/res/values
+
+          # Write the Arabic app name via base64 to guarantee correct UTF-8 bytes,
+          # regardless of the runner's locale/encoding (avoids the mojibake issue).
+          echo "2YXYtdin2LHZitmB2Yo=" | base64 -d > /tmp/app_name.txt
+          APP_NAME=$(cat /tmp/app_name.txt)
+
+          cat << EOF > android/app/src/main/res/values/strings.xml
+          <resources>
+              <string name="app_name">$APP_NAME</string>
+          </resources>
+          EOF
+
           cat << 'EOF' > android/app/src/main/AndroidManifest.xml
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.RECEIVE_SMS"/>
@@ -44,8 +57,11 @@ jobs:
               <uses-permission android:name="android.permission.USE_FINGERPRINT"/>
 
               <application
-                  android:label="مصاريفي"
+                  android:label="@string/app_name"
                   android:icon="@mipmap/ic_launcher">
+                  <meta-data
+                      android:name="flutterEmbedding"
+                      android:value="2" />
                   <activity
                       android:name=".MainActivity"
                       android:exported="true"
