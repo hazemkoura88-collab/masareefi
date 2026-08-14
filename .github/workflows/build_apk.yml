@@ -24,14 +24,19 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Generate Android Native Files
-        run: flutter create . --org com.masareefi --platforms android
+      - name: Recreate Android Project Files safely
+        run: |
+          mkdir -p /tmp/backup
+          cp android/app/src/main/AndroidManifest.xml /tmp/backup/ 2>/dev/null || true
+          rm -rf android
+          flutter create --org com.masareefi --platforms android .
+          cp /tmp/backup/AndroidManifest.xml android/app/src/main/AndroidManifest.xml 2>/dev/null || true
 
       - name: Get Dependencies
         run: flutter pub get
 
       - name: Build Release APK
-        run: flutter build apk --release
+        run: flutter build apk --release --no-tree-shake-icons
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
