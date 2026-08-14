@@ -45,7 +45,7 @@ jobs:
           cat << 'EOF' >> android/build.gradle.kts
 
           subprojects {
-              afterEvaluate {
+              val applyJvmTarget: Project.() -> Unit = {
                   tasks.withType<JavaCompile>().configureEach {
                       sourceCompatibility = "17"
                       targetCompatibility = "17"
@@ -54,6 +54,13 @@ jobs:
                       compilerOptions {
                           jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
                       }
+                  }
+              }
+              if (state.executed) {
+                  applyJvmTarget()
+              } else {
+                  afterEvaluate {
+                      applyJvmTarget()
                   }
               }
           }
