@@ -24,12 +24,12 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Clean & Recreate Clean Project
+      - name: Setup Fresh Project Cleanly
         run: |
-          rm -rf *
+          rm -rf lib android pubspec.yaml pubspec.lock
           flutter create --org com.masareefi --platforms android .
 
-      - name: Write pubspec.yaml
+      - name: Create pubspec.yaml
         run: |
           cat << 'EOF' > pubspec.yaml
           name: masareefi
@@ -60,7 +60,7 @@ jobs:
             uses-material-design: true
           EOF
 
-      - name: Write AndroidManifest.xml
+      - name: Set Android Configuration
         run: |
           cat << 'EOF' > android/app/src/main/AndroidManifest.xml
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
@@ -89,9 +89,10 @@ jobs:
           </manifest>
           EOF
 
-      - name: Write Database Helper
+      - name: Build App Source Code
         run: |
           mkdir -p lib
+
           cat << 'EOF' > lib/database_helper.dart
           import 'dart:async';
           import 'package:path/path.dart';
@@ -201,8 +202,6 @@ jobs:
           }
           EOF
 
-      - name: Write AlRajhi Parser
-        run: |
           cat << 'EOF' > lib/alrajhi_parser.dart
           import 'dart:crypto';
           import 'dart:convert';
@@ -294,14 +293,9 @@ jobs:
           }
           EOF
 
-      - name: Write Main Code
-        run: |
           cat << 'EOF' > lib/main.dart
           import 'package:flutter/material.dart';
           import 'package:flutter_localizations/flutter_localizations.dart';
-          import 'package:permission_handler/permission_handler.dart';
-          import 'package:local_auth/local_auth.dart';
-          import 'package:fl_chart/fl_chart.dart';
           import 'package:intl/intl.dart';
 
           import 'database_helper.dart';
