@@ -31,7 +31,7 @@ jobs:
 
       - name: Add Required Dependencies
         run: |
-          flutter pub add sqflite path intl permission_handler crypto
+          flutter pub add sqflite path intl permission_handler crypto another_telephony
           flutter pub add flutter_localizations --sdk=flutter
 
       - name: Bump compileSdk to 37
@@ -289,6 +289,68 @@ jobs:
           }
           EOF
 
+      - name: Write SMS Reader
+        run: |
+          cat << 'EOF' > lib/sms_reader.dart
+          import 'package:another_telephony/telephony.dart';
+          import 'database_helper.dart';
+          import 'alrajhi_parser.dart';
+
+          class SmsReader {
+            static final Telephony _telephony = Telephony.instance;
+
+            /// Requests permission to read SMS messages. Returns true if granted.
+            static Future<bool> requestPermission() async {
+              final bool? granted = await _telephony.requestSmsPermissions;
+              return granted ?? false;
+            }
+
+            /// Reads the entire SMS inbox, parses any Al Rajhi transaction
+            /// messages found, and stores the new ones in the local database.
+            /// Returns the number of newly added transactions.
+            static Future<int> syncMessages() async {
+              final bool granted = await requestPermission();
+              if (!granted) return 0;
+
+              final List<SmsMessage> messages = await _telephony.getInboxSms(
+                columns: [SmsColumn.ADDRESS, SmsColumn.BODY, SmsColumn.DATE],
+                sortOrder: [OrderBy(SmsColumn.DATE, sort: Sort.DESC)],
+              );
+
+              int addedCount = 0;
+
+              for (final msg in messages) {
+                final String body = msg.body ?? '';
+                if (body.isEmpty) continue;
+
+                final int timestamp =
+                    msg.date ?? DateTime.now().millisecondsSinceEpoch;
+                final DateTime smsDate =
+                    DateTime.fromMillisecondsSinceEpoch(timestamp);
+
+                final parsed = AlRajhiParser.parseSMS(body, smsDate);
+                if (parsed == null) continue;
+
+                final expense = Expense(
+                  amount: parsed.amount,
+                  merchant: parsed.merchant,
+                  date: parsed.date,
+                  cardLast4: parsed.cardLast4,
+                  type: parsed.type,
+                  category: parsed.category,
+                  smsHash: parsed.smsHash,
+                );
+
+                final bool inserted =
+                    await DatabaseHelper.instance.insertExpense(expense);
+                if (inserted) addedCount++;
+              }
+
+              return addedCount;
+            }
+          }
+          EOF
+
       - name: Write Application Main Code
         run: |
           cat << 'EOF' > lib/main.dart
@@ -298,6 +360,7 @@ jobs:
 
           import 'database_helper.dart';
           import 'alrajhi_parser.dart';
+          import 'sms_reader.dart';
 
           void main() {
             WidgetsFlutterBinding.ensureInitialized();
@@ -353,25 +416,57 @@ jobs:
           class _HomeScreenState extends State<HomeScreen> {
             List<Expense> _expenses = [];
             bool _isLoading = true;
+            bool _isSyncing = false;
 
             @override
             void initState() {
               super.initState();
-              _loadData();
+              _loadData().then((_) => _syncSms());
             }
 
             Future<void> _loadData() async {
               final data = await DatabaseHelper.instance.getAllExpenses();
+              if (!mounted) return;
               setState(() {
                 _expenses = data;
                 _isLoading = false;
               });
             }
 
+            Future<void> _syncSms() async {
+              setState(() {
+                _isSyncing = true;
+              });
+
+              final int addedCount = await SmsReader.syncMessages();
+              await _loadData();
+
+              if (!mounted) return;
+              setState(() {
+                _isSyncing = false;
+              });
+
+              final String message = addedCount > 0
+                  ? 'تم إضافة $addedCount عملية جديدة من الرسائل'
+                  : 'لا توجد عمليات جديدة. تأكد من منح إذن قراءة الرسائل للتطبيق';
+
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text(message)),
+              );
+            }
+
             double get _todayExpense {
               DateTime now = DateTime.now();
               return _expenses
                   .where((e) => e.date.year == now.year && e.date.month == now.month && e.date.day == now.day)
+                  .fold(0.0, (sum, item) => sum + item.amount);
+            }
+
+            double get _weekExpense {
+              DateTime now = DateTime.now();
+              DateTime weekAgo = now.subtract(const Duration(days: 7));
+              return _expenses
+                  .where((e) => e.date.isAfter(weekAgo))
                   .fold(0.0, (sum, item) => sum + item.amount);
             }
 
@@ -388,6 +483,20 @@ jobs:
                 appBar: AppBar(
                   title: const Text('مصاريفي'),
                   actions: [
+                    _isSyncing
+                        ? const Padding(
+                            padding: EdgeInsets.all(14.0),
+                            child: SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            ),
+                          )
+                        : IconButton(
+                            icon: const Icon(Icons.sync),
+                            tooltip: 'مزامنة الرسائل',
+                            onPressed: _syncSms,
+                          ),
                     IconButton(
                       icon: const Icon(Icons.brightness_6),
                       onPressed: () => MasareefiApp.of(context)?.toggleTheme(),
@@ -397,15 +506,17 @@ jobs:
                 body: _isLoading
                     ? const Center(child: CircularProgressIndicator())
                     : RefreshIndicator(
-                        onRefresh: _loadData,
+                        onRefresh: _syncSms,
                         child: ListView(
                           padding: const EdgeInsets.all(16),
                           children: [
                             Row(
                               children: [
-                                _buildStatCard('اليوم', '$_todayExpense SAR', Colors.orange),
+                                _buildStatCard('اليوم', '${_todayExpense.toStringAsFixed(2)} SAR', Colors.orange),
                                 const SizedBox(width: 8),
-                                _buildStatCard('الشهر', '$_monthExpense SAR', Colors.teal),
+                                _buildStatCard('الأسبوع', '${_weekExpense.toStringAsFixed(2)} SAR', Colors.purple),
+                                const SizedBox(width: 8),
+                                _buildStatCard('الشهر', '${_monthExpense.toStringAsFixed(2)} SAR', Colors.teal),
                               ],
                             ),
                             const SizedBox(height: 20),
@@ -435,14 +546,19 @@ jobs:
             Widget _buildStatCard(String title, String value, Color color) {
               return Expanded(
                 child: Container(
-                  padding: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 14),
                   decoration: BoxDecoration(color: color.withOpacity(0.15), borderRadius: BorderRadius.circular(12)),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(title, style: TextStyle(color: color, fontWeight: FontWeight.bold)),
+                      Text(title, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 13)),
                       const SizedBox(height: 6),
-                      Text(value, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color)),
+                      Text(
+                        value,
+                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: color),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ],
                   ),
                 ),
