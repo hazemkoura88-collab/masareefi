@@ -24,13 +24,428 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Recreate Android Project Files safely
+      - name: Clean & Recreate Clean Project
         run: |
-          mkdir -p /tmp/backup
-          cp android/app/src/main/AndroidManifest.xml /tmp/backup/ 2>/dev/null || true
-          rm -rf android
+          rm -rf *
           flutter create --org com.masareefi --platforms android .
-          cp /tmp/backup/AndroidManifest.xml android/app/src/main/AndroidManifest.xml 2>/dev/null || true
+
+      - name: Write pubspec.yaml
+        run: |
+          cat << 'EOF' > pubspec.yaml
+          name: masareefi
+          description: "تطبيق مصاريفي"
+          publish_to: 'none'
+          version: 1.0.0+1
+
+          environment:
+            sdk: '>=3.0.0 <4.0.0'
+
+          dependencies:
+            flutter:
+              sdk: flutter
+            flutter_localizations:
+              sdk: flutter
+            sqflite: ^2.3.0
+            path: ^1.9.0
+            intl: ^0.19.0
+            permission_handler: ^11.3.1
+            local_auth: ^2.2.0
+            fl_chart: ^0.68.0
+            excel: ^4.0.3
+            pdf: ^3.10.8
+            printing: ^5.13.0
+            path_provider: ^2.1.3
+
+          flutter:
+            uses-material-design: true
+          EOF
+
+      - name: Write AndroidManifest.xml
+        run: |
+          cat << 'EOF' > android/app/src/main/AndroidManifest.xml
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.RECEIVE_SMS"/>
+              <uses-permission android:name="android.permission.READ_SMS"/>
+              <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
+              <uses-permission android:name="android.permission.USE_FINGERPRINT"/>
+
+              <application
+                  android:label="مصاريفي"
+                  android:icon="@mipmap/ic_launcher">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTop"
+                      android:theme="@style/LaunchTheme"
+                      android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+                      android:hardwareAccelerated="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+      - name: Write Database Helper
+        run: |
+          mkdir -p lib
+          cat << 'EOF' > lib/database_helper.dart
+          import 'dart:async';
+          import 'package:path/path.dart';
+          import 'package:sqflite/sqflite.dart';
+
+          class Expense {
+            final int? id;
+            final double amount;
+            final String merchant;
+            final DateTime date;
+            final String cardLast4;
+            final String type;
+            final String category;
+            final String smsHash;
+
+            Expense({
+              this.id,
+              required this.amount,
+              required this.merchant,
+              required this.date,
+              required this.cardLast4,
+              required this.type,
+              required this.category,
+              required this.smsHash,
+            });
+
+            Map<String, dynamic> toMap() {
+              return {
+                'id': id,
+                'amount': amount,
+                'merchant': merchant,
+                'date': date.toIso8601String(),
+                'cardLast4': cardLast4,
+                'type': type,
+                'category': category,
+                'smsHash': smsHash,
+              };
+            }
+
+            factory Expense.fromMap(Map<String, dynamic> map) {
+              return Expense(
+                id: map['id'],
+                amount: map['amount'],
+                merchant: map['merchant'],
+                date: DateTime.parse(map['date']),
+                cardLast4: map['cardLast4'],
+                type: map['type'],
+                category: map['category'],
+                smsHash: map['smsHash'],
+              );
+            }
+          }
+
+          class DatabaseHelper {
+            static final DatabaseHelper instance = DatabaseHelper._init();
+            static Database? _database;
+
+            DatabaseHelper._init();
+
+            Future<Database> get database async {
+              if (_database != null) return _database!;
+              _database = await _initDB('masareefi.db');
+              return _database!;
+            }
+
+            Future<Database> _initDB(String filePath) async {
+              final dbPath = await getDatabasesPath();
+              final path = join(dbPath, filePath);
+
+              return await openDatabase(
+                path,
+                version: 1,
+                onCreate: _createDB,
+              );
+            }
+
+            Future _createDB(Database db, int version) async {
+              await db.execute('''
+                CREATE TABLE expenses (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  amount REAL NOT NULL,
+                  merchant TEXT NOT NULL,
+                  date TEXT NOT NULL,
+                  cardLast4 TEXT NOT NULL,
+                  type TEXT NOT NULL,
+                  category TEXT NOT NULL,
+                  smsHash TEXT UNIQUE NOT NULL
+                )
+              ''');
+            }
+
+            Future<bool> insertExpense(Expense expense) async {
+              final db = await instance.database;
+              try {
+                await db.insert('expenses', expense.toMap(), conflictAlgorithm: ConflictAlgorithm.fail);
+                return true;
+              } catch (e) {
+                return false;
+              }
+            }
+
+            Future<List<Expense>> getAllExpenses() async {
+              final db = await instance.database;
+              final result = await db.query('expenses', orderBy: 'date DESC');
+              return result.map((json) => Expense.fromMap(json)).toList();
+            }
+          }
+          EOF
+
+      - name: Write AlRajhi Parser
+        run: |
+          cat << 'EOF' > lib/alrajhi_parser.dart
+          import 'dart:crypto';
+          import 'dart:convert';
+
+          class TransactionParsed {
+            final double amount;
+            final String merchant;
+            final DateTime date;
+            final String cardLast4;
+            final String type;
+            final String category;
+            final String smsHash;
+
+            TransactionParsed({
+              required this.amount,
+              required this.merchant,
+              required this.date,
+              required this.cardLast4,
+              required this.type,
+              required this.category,
+              required this.smsHash,
+            });
+          }
+
+          class AlRajhiParser {
+            static TransactionParsed? parseSMS(String body, DateTime smsTime) {
+              if (!body.contains('الراجحي') && !body.contains('مبلغ') && !body.contains('بطاقة')) {
+                return null;
+              }
+
+              double amount = 0.0;
+              String merchant = 'غير محدد';
+              String cardLast4 = '0000';
+              String type = 'شراء';
+
+              RegExp amountReg = RegExp(r'(?:بقيمة|بمبلغ)\s+([0-9]+(?:\.[0-9]+)?)\s*(?:SAR|ر.س)?');
+              var amountMatch = amountReg.firstMatch(body);
+              if (amountMatch != null) {
+                amount = double.tryParse(amountMatch.group(1) ?? '0') ?? 0.0;
+              } else {
+                return null;
+              }
+
+              RegExp cardReg = RegExp(r'\(([0-9]{4})\)');
+              var cardMatch = cardReg.firstMatch(body);
+              if (cardMatch != null) {
+                cardLast4 = cardMatch.group(1) ?? '0000';
+              }
+
+              if (body.contains('شراء') || body.contains('مدى')) {
+                type = 'شراء';
+                RegExp merchantReg = RegExp(r'لدى\s+([^\n\r]+?)(?=\s+في|\s+بقيمة|\.$|$)');
+                var mMatch = merchantReg.firstMatch(body);
+                if (mMatch != null) merchant = mMatch.group(1)!.trim();
+              } else if (body.contains('سحب نقدي')) {
+                type = 'سحب';
+                merchant = 'صراف آلي';
+              } else if (body.contains('تحويل')) {
+                type = 'تحويلات';
+                merchant = 'تحويل صادر';
+              }
+
+              String category = _categorize(merchant, body);
+              String smsHash = md5.convert(utf8.encode(body + smsTime.toString())).toString();
+
+              return TransactionParsed(
+                amount: amount,
+                merchant: merchant,
+                date: smsTime,
+                cardLast4: cardLast4,
+                type: type,
+                category: category,
+                smsHash: smsHash,
+              );
+            }
+
+            static String _categorize(String merchant, String body) {
+              String text = (merchant + " " + body).toLowerCase();
+
+              if (text.contains('قهوة') || text.contains('كافيه') || text.contains('starbucks') || text.contains('barns')) return 'قهوة';
+              if (text.contains('مطعم') || text.contains('mcdonalds') || text.contains('albaik')) return 'مطاعم';
+              if (text.contains('بنزين') || text.contains('الدريس') || text.contains('ساسكو')) return 'بنزين';
+              if (text.contains('بندة') || text.contains('العثيم') || text.contains('سوبرماركت')) return 'سوبر ماركت';
+              if (text.contains('فاتورة') || text.contains('stc') || text.contains('موبايلي')) return 'فواتير';
+              if (text.contains('تحويل')) return 'تحويلات';
+              if (text.contains('amazon') || text.contains('noon')) return 'تسوق';
+              return 'أخرى';
+            }
+          }
+          EOF
+
+      - name: Write Main Code
+        run: |
+          cat << 'EOF' > lib/main.dart
+          import 'package:flutter/material.dart';
+          import 'package:flutter_localizations/flutter_localizations.dart';
+          import 'package:permission_handler/permission_handler.dart';
+          import 'package:local_auth/local_auth.dart';
+          import 'package:fl_chart/fl_chart.dart';
+          import 'package:intl/intl.dart';
+
+          import 'database_helper.dart';
+          import 'alrajhi_parser.dart';
+
+          void main() {
+            WidgetsFlutterBinding.ensureInitialized();
+            runApp(const MasareefiApp());
+          }
+
+          class MasareefiApp extends StatefulWidget {
+            const MasareefiApp({super.key});
+
+            @override
+            State<MasareefiApp> meState() => _MasareefiAppState();
+
+            static _MasareefiAppState meState() => _MasareefiAppState();
+          }
+
+          class _MasareefiAppState extends State<MasareefiApp> {
+            ThemeMode _themeMode = ThemeMode.system;
+
+            void toggleTheme() {
+              setState(() {
+                _themeMode = _themeMode == ThemeMode.light ? ThemeMode.dark : ThemeMode.light;
+              });
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                title: 'مصاريفي',
+                debugShowCheckedModeBanner: false,
+                locale: const Locale('ar', 'SA'),
+                supportedLocales: const [Locale('ar', 'SA')],
+                localizationsDelegates: const [
+                  GlobalMaterialLocalizations.delegate,
+                  GlobalWidgetsLocalizations.delegate,
+                  GlobalCupertinoLocalizations.delegate,
+                ],
+                themeMode: _themeMode,
+                theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.teal, brightness: Brightness.light),
+                darkTheme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.teal, brightness: Brightness.dark),
+                home: const HomeScreen(),
+              );
+            }
+          }
+
+          class HomeScreen extends StatefulWidget {
+            const HomeScreen({super.key});
+
+            @override
+            State<HomeScreen> createState() => _HomeScreenState();
+          }
+
+          class _HomeScreenState extends State<HomeScreen> {
+            List<Expense> _expenses = [];
+            bool _isLoading = true;
+
+            @override
+            void initState() {
+              super.initState();
+              _loadData();
+            }
+
+            Future<void> _loadData() async {
+              final data = await DatabaseHelper.instance.getAllExpenses();
+              setState(() {
+                _expenses = data;
+                _isLoading = false;
+              });
+            }
+
+            double get _todayExpense {
+              DateTime now = DateTime.now();
+              return _expenses
+                  .where((e) => e.date.year == now.year && e.date.month == now.month && e.date.day == now.day)
+                  .fold(0.0, (sum, item) => sum + item.amount);
+            }
+
+            double get _monthExpense {
+              DateTime now = DateTime.now();
+              return _expenses
+                  .where((e) => e.date.year == now.year && e.date.month == now.month)
+                  .fold(0.0, (sum, item) => sum + item.amount);
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(
+                  title: const Text('مصاريفي'),
+                  actions: [
+                    IconButton(icon: const Icon(Icons.brightness_6), onPressed: () => MasareefiApp.meState().toggleTheme()),
+                  ],
+                ),
+                body: _isLoading
+                    ? const Center(child: CircularProgressIndicator())
+                    : RefreshIndicator(
+                        onRefresh: _loadData,
+                        child: ListView(
+                          padding: const EdgeInsets.all(16),
+                          children: [
+                            Row(
+                              children: [
+                                _buildStatCard('اليوم', '$_todayExpense SAR', Colors.orange),
+                                const SizedBox(width: 8),
+                                _buildStatCard('الشهر', '$_monthExpense SAR', Colors.teal),
+                              ],
+                            ),
+                            const SizedBox(height: 20),
+                            const Text('سجل العمليات', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                            const SizedBox(height: 10),
+                            ..._expenses.map((item) => Card(
+                                  child: ListTile(
+                                    title: Text(item.merchant, style: const TextStyle(fontWeight: FontWeight.bold)),
+                                    subtitle: Text(DateFormat('yyyy/MM/dd HH:mm').format(item.date)),
+                                    trailing: Text('${item.amount} SAR', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.redAccent)),
+                                  ),
+                                )),
+                          ],
+                        ),
+                      ),
+              );
+            }
+
+            Widget _buildStatCard(String title, String value, Color color) {
+              return Expanded(
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(color: color.withOpacity(0.15), borderRadius: BorderRadius.circular(12)),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title, style: TextStyle(color: color, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 6),
+                      Text(value, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color)),
+                    ],
+                  ),
+                ),
+              );
+            }
+          }
+          EOF
 
       - name: Get Dependencies
         run: flutter pub get
