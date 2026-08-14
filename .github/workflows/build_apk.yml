@@ -40,6 +40,24 @@ jobs:
           sed -i 's/compileSdk[[:space:]]*=[[:space:]]*[0-9]\+/compileSdk = 37/' android/app/build.gradle.kts
           cat android/app/build.gradle.kts | grep compileSdk
 
+      - name: Fix Kotlin/Java JVM Target Compatibility
+        run: |
+          cat << 'EOF' >> android/build.gradle.kts
+
+          subprojects {
+              tasks.withType<JavaCompile>().configureEach {
+                  sourceCompatibility = "17"
+                  targetCompatibility = "17"
+              }
+              tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+                  kotlinOptions {
+                      jvmTarget = "17"
+                  }
+              }
+          }
+          EOF
+          cat android/build.gradle.kts
+
       - name: Configure Android Permissions
         run: |
           mkdir -p android/app/src/main/res/values
