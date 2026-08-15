@@ -1207,10 +1207,20 @@ jobs:
                     const SizedBox(height: 24),
 
                     Row(
-                      children: const [
-                        Container(width: 4, height: 16, decoration: BoxDecoration(color: Color(0xFFC85A32), borderRadius: BorderRadius.all(Radius.circular(2)))),
-                        SizedBox(width: 8),
-                        Text('إعدادات البيت', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF2D2825))),
+                      children: [
+                        Container(
+                          width: 4,
+                          height: 16,
+                          decoration: const BoxDecoration(
+                            color: Color(0xFFC85A32),
+                            borderRadius: BorderRadius.all(Radius.circular(2)),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        const Text(
+                          'إعدادات البيت',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF2D2825)),
+                        ),
                       ],
                     ),
                     const SizedBox(height: 12),
