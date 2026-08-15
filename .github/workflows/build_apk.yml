@@ -63,13 +63,25 @@ jobs:
               content = f.read()
 
           perms = '''
-              
-              
-              
-              
+              <uses-permission android:name="android.permission.RECEIVE_SMS"/>
+              <uses-permission android:name="android.permission.READ_SMS"/>
+              <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
+              <uses-permission android:name="android.permission.USE_FINGERPRINT"/>
           '''
 
-          content = content.replace(' android/app/src/main/kotlin/com/hassalah/app/MainActivity.kt
+          content = content.replace('<application', perms + '    <application')
+          content = content.replace('android:label="masareefi"', 'android:label="حصّالة"')
+          content = content.replace('android:label="hassalah"', 'android:label="حصّالة"')
+
+          with open(p, 'w', encoding='utf-8') as f:
+              f.write(content)
+          EOF
+          python3 configure_android.py
+
+      - name: Implement Native Android SMS Reader (MainActivity.kt)
+        run: |
+          mkdir -p android/app/src/main/kotlin/com/hassalah/app/
+          cat << 'EOF' > android/app/src/main/kotlin/com/hassalah/app/MainActivity.kt
           package com.hassalah.app
 
           import android.database.Cursor
@@ -86,7 +98,7 @@ jobs:
                   MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
                       if (call.method == "getInboxSms") {
                           try {
-                              val smsList = mutableListOf>()
+                              val smsList = mutableListOf<Map<String, Any>>()
                               val cursor: Cursor? = contentResolver.query(
                                   Uri.parse("content://sms/inbox"),
                                   arrayOf("_id", "address", "body", "date"),
@@ -153,7 +165,7 @@ jobs:
               required this.smsHash,
             });
 
-            Map toMap() {
+            Map<String, dynamic> toMap() {
               return {
                 'id': id,
                 'amount': amount,
@@ -166,7 +178,7 @@ jobs:
               };
             }
 
-            factory Expense.fromMap(Map map) {
+            factory Expense.fromMap(Map<String, dynamic> map) {
               return Expense(
                 id: map['id'],
                 amount: map['amount'],
@@ -186,13 +198,13 @@ jobs:
 
             DatabaseHelper._init();
 
-            Future get database async {
+            Future<Database> get database async {
               if (_database != null) return _database!;
               _database = await _initDB('hassalah.db');
               return _database!;
             }
 
-            Future _initDB(String filePath) async {
+            Future<Database> _initDB(String filePath) async {
               final dbPath = await getDatabasesPath();
               final path = join(dbPath, filePath);
 
@@ -218,7 +230,7 @@ jobs:
               ''');
             }
 
-            Future insertExpense(Expense expense) async {
+            Future<bool> insertExpense(Expense expense) async {
               final db = await instance.database;
               try {
                 await db.insert('expenses', expense.toMap(), conflictAlgorithm: ConflictAlgorithm.fail);
@@ -228,13 +240,13 @@ jobs:
               }
             }
 
-            Future> getAllExpenses() async {
+            Future<List<Expense>> getAllExpenses() async {
               final db = await instance.database;
               final result = await db.query('expenses', orderBy: 'date DESC');
               return result.map((json) => Expense.fromMap(json)).toList();
             }
 
-            Future clearAll() async {
+            Future<void> clearAll() async {
               final db = await instance.database;
               await db.delete('expenses');
             }
@@ -350,10 +362,10 @@ jobs:
                 context.findAncestorStateOfType<_HassalahAppState>();
 
             @override
-            State createState() => _HassalahAppState();
+            State<HassalahApp> createState() => _HassalahAppState();
           }
 
-          class _HassalahAppState extends State {
+          class _HassalahAppState extends State<HassalahApp> {
             int salaryStartDay = 25;
             String walletName = 'المحفظة الشخصية';
             String currency = 'ر.س';
@@ -406,21 +418,21 @@ jobs:
           class SmsService {
             static const MethodChannel _channel = MethodChannel('com.hassalah.app/sms');
 
-            static Future syncBankSms() async {
+            static Future<int> syncBankSms() async {
               final status = await Permission.sms.request();
               if (!status.isGranted) {
                 return -1;
               }
 
               try {
-                final List? rawMessages = await _channel.invokeMethod>('getInboxSms');
+                final List<dynamic>? rawMessages = await _channel.invokeMethod<List<dynamic>>('getInboxSms');
                 if (rawMessages == null || rawMessages.isEmpty) {
                   return 0;
                 }
 
                 int newInserted = 0;
                 for (final raw in rawMessages) {
-                  final map = Map.from(raw as Map);
+                  final map = Map<String, dynamic>.from(raw as Map);
                   final String body = map['body'] ?? '';
                   final int dateMs = map['date'] ?? DateTime.now().millisecondsSinceEpoch;
                   final DateTime smsTime = DateTime.fromMillisecondsSinceEpoch(dateMs);
@@ -460,15 +472,15 @@ jobs:
             const MainTabControllerScreen({super.key});
 
             @override
-            State createState() => _MainTabControllerScreenState();
+            State<MainTabControllerScreen> createState() => _MainTabControllerScreenState();
           }
 
-          class _MainTabControllerScreenState extends State {
+          class _MainTabControllerScreenState extends State<MainTabControllerScreen> {
             int _currentTab = 0;
-            List _expenses = [];
+            List<Expense> _expenses = [];
             bool _isLoading = true;
 
-            final List _savingsBoxes = [
+            final List<SavingsBox> _savingsBoxes = [
               SavingsBox(name: 'طوارئ وأمان', current: 3500, target: 10000, emoji: '🛡️', color: const Color(0xFF0C3B2E)),
               SavingsBox(name: 'سفر وإجازة', current: 2400, target: 6000, emoji: '✈️', color: const Color(0xFF0284C7)),
               SavingsBox(name: 'تجديد سيارة', current: 1200, target: 5000, emoji: '🚗', color: const Color(0xFFE5A93C)),
@@ -480,12 +492,12 @@ jobs:
               _initAndSync();
             }
 
-            Future _initAndSync() async {
+            Future<void> _initAndSync() async {
               await _loadData();
               await _syncSmsSilently();
             }
 
-            Future _loadData() async {
+            Future<void> _loadData() async {
               final data = await DatabaseHelper.instance.getAllExpenses();
               setState(() {
                 _expenses = data;
@@ -493,14 +505,14 @@ jobs:
               });
             }
 
-            Future _syncSmsSilently() async {
+            Future<void> _syncSmsSilently() async {
               int res = await SmsService.syncBankSms();
               if (res > 0) {
                 await _loadData();
               }
             }
 
-            Future _handleManualSync() async {
+            Future<void> _handleManualSync() async {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(content: Text('جاري فحص وتحديث رسائل البنوك... ⏳')),
               );
@@ -593,7 +605,7 @@ jobs:
                               ),
                             ),
                             const SizedBox(height: 12),
-                            DropdownButtonFormField(
+                            DropdownButtonFormField<String>(
                               value: selectedCategory,
                               decoration: InputDecoration(
                                 labelText: 'التصنيف',
@@ -736,7 +748,7 @@ jobs:
           }
 
           class HomeScreenTab extends StatefulWidget {
-            final List expenses;
+            final List<Expense> expenses;
             final bool isLoading;
             final VoidCallback onAddPressed;
             final VoidCallback onRefresh;
@@ -750,14 +762,14 @@ jobs:
             });
 
             @override
-            State createState() => _HomeScreenTabState();
+            State<HomeScreenTab> createState() => _HomeScreenTabState();
           }
 
-          class _HomeScreenTabState extends State {
+          class _HomeScreenTabState extends State<HomeScreenTab> {
             String _selectedCategory = 'الكل';
             String _searchQuery = '';
 
-            final List _categories = [
+            final List<String> _categories = <String>[
               'الكل', 'مطاعم', 'قهوة', 'بنزين', 'سوبر ماركت', 'فواتير', 'تسوق', 'تحويلات', 'صحة وطب', 'أخرى'
             ];
 
@@ -778,7 +790,7 @@ jobs:
               double remaining = budget - monthExp;
               double progress = budget > 0 ? (monthExp / budget).clamp(0.0, 1.0) : 0.0;
 
-              final filtered = widget.expenses.where((e) {
+              final List<Expense> filtered = widget.expenses.where((e) {
                 bool catMatch = _selectedCategory == 'الكل' || e.category == _selectedCategory;
                 bool searchMatch = e.merchant.toLowerCase().contains(_searchQuery.toLowerCase()) || e.category.contains(_searchQuery);
                 return catMatch && searchMatch;
@@ -1122,19 +1134,19 @@ jobs:
           }
 
           class ReportsScreenTab extends StatefulWidget {
-            final List expenses;
+            final List<Expense> expenses;
             const ReportsScreenTab({super.key, required this.expenses});
 
             @override
-            State createState() => _ReportsScreenTabState();
+            State<ReportsScreenTab> createState() => _ReportsScreenTabState();
           }
 
-          class _ReportsScreenTabState extends State {
+          class _ReportsScreenTabState extends State<ReportsScreenTab> {
             int _selectedYear = 2026;
             int _selectedMonth = 8;
 
-            final List _years = [2026, 2025, 2024];
-            final List _months = [
+            final List<int> _years = [2026, 2025, 2024];
+            final List<String> _months = [
               'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
               'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'
             ];
@@ -1147,7 +1159,7 @@ jobs:
 
               double total = filtered.fold(0.0, (sum, i) => sum + i.amount);
 
-              Map catTotals = {};
+              Map<String, double> catTotals = {};
               for (var exp in filtered) {
                 catTotals[exp.category] = (catTotals[exp.category] ?? 0.0) + exp.amount;
               }
@@ -1162,7 +1174,7 @@ jobs:
               ];
 
               int idx = 0;
-              List sections = [];
+              List<PieChartSectionData> sections = [];
               catTotals.forEach((k, v) {
                 sections.add(PieChartSectionData(
                   value: v,
@@ -1257,7 +1269,7 @@ jobs:
                                     sectionsSpace: 3,
                                     centerSpaceRadius: 65,
                                     sections: sections.isEmpty
-                                        ? [
+                                        ? <PieChartSectionData>[
                                             PieChartSectionData(
                                               value: 1,
                                               color: const Color(0xFFE2E8F0),
@@ -1343,8 +1355,8 @@ jobs:
           }
 
           class BudgetScreenTab extends StatelessWidget {
-            final List expenses;
-            final List savingsBoxes;
+            final List<Expense> expenses;
+            final List<SavingsBox> savingsBoxes;
 
             const BudgetScreenTab({
               super.key,
@@ -1509,7 +1521,7 @@ jobs:
                 body: ListView(
                   padding: const EdgeInsets.all(16),
                   children: [
-                    _buildSettingsGroup('الأمان والخصوصية', [
+                    _buildSettingsGroup('الأمان والخصوصية', <Widget>[
                       SwitchListTile(
                         activeColor: const Color(0xFF0C3B2E),
                         title: const Text('القفل بالبصمة / كلمة المرور', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
@@ -1520,7 +1532,7 @@ jobs:
                     ]),
                     const SizedBox(height: 16),
 
-                    _buildSettingsGroup('دورة الحسابات والراتب', [
+                    _buildSettingsGroup('دورة الحسابات والراتب', <Widget>[
                       ListTile(
                         title: const Text('بداية الشهر المالي (يوم الراتب)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                         subtitle: Text('يتم احتساب المصاريف بداية من يوم ${appState?.salaryStartDay ?? 25} من كل شهر', style: const TextStyle(fontSize: 12, color: Color(0xFF718096))),
@@ -1534,10 +1546,10 @@ jobs:
                     ]),
                     const SizedBox(height: 16),
 
-                    _buildSettingsGroup('حول التطبيق والبيانات', [
-                      ListTile(
-                        title: const Text('العملة الافتراضية', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                        subtitle: const Text('الريال السعودي (ر.س) 🇸🇦', style: TextStyle(fontSize: 12, color: Color(0xFF718096))),
+                    _buildSettingsGroup('حول التطبيق والبيانات', <Widget>[
+                      const ListTile(
+                        title: Text('العملة الافتراضية', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                        subtitle: Text('الريال السعودي (ر.س) 🇸🇦', style: TextStyle(fontSize: 12, color: Color(0xFF718096))),
                       ),
                       const Divider(height: 1),
                       ListTile(
@@ -1551,7 +1563,7 @@ jobs:
               );
             }
 
-            Widget _buildSettingsGroup(String title, List children) {
+            Widget _buildSettingsGroup(String title, List<Widget> children) {
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
