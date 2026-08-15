@@ -33,19 +33,32 @@ jobs:
         run: |
           flutter pub add sqflite path intl permission_handler fl_chart
 
-      - name: Configure Android Permissions & App Name
+      - name: Configure Android Permissions and App Name
         run: |
-          python3 -c "
+          cat << 'EOF' > configure_android.py
           p = 'android/app/src/main/AndroidManifest.xml'
-          with open(p, 'r') as f:
+          with open(p, 'r', encoding='utf-8') as f:
               content = f.read()
+
           perms = '''
-              
-              
-              
-              
+              <uses-permission android:name="android.permission.RECEIVE_SMS"/>
+              <uses-permission android:name="android.permission.READ_SMS"/>
+              <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
+              <uses-permission android:name="android.permission.USE_FINGERPRINT"/>
           '''
-          content = content.replace(' lib/database_helper.dart
+
+          content = content.replace('<application', perms + '    <application')
+          content = content.replace('android:label="masareefi"', 'android:label="حصّالة"')
+          content = content.replace('android:label="hassalah"', 'android:label="حصّالة"')
+
+          with open(p, 'w', encoding='utf-8') as f:
+              f.write(content)
+          EOF
+          python3 configure_android.py
+
+      - name: Build Database and Logic Files
+        run: |
+          cat << 'EOF' > lib/database_helper.dart
           import 'dart:async';
           import 'package:path/path.dart';
           import 'package:sqflite/sqflite.dart';
@@ -71,7 +84,7 @@ jobs:
               required this.smsHash,
             });
 
-            Map toMap() {
+            Map<String, dynamic> toMap() {
               return {
                 'id': id,
                 'amount': amount,
@@ -84,7 +97,7 @@ jobs:
               };
             }
 
-            factory Expense.fromMap(Map map) {
+            factory Expense.fromMap(Map<String, dynamic> map) {
               return Expense(
                 id: map['id'],
                 amount: map['amount'],
@@ -104,13 +117,13 @@ jobs:
 
             DatabaseHelper._init();
 
-            Future get database async {
+            Future<Database> get database async {
               if (_database != null) return _database!;
               _database = await _initDB('hassalah.db');
               return _database!;
             }
 
-            Future _initDB(String filePath) async {
+            Future<Database> _initDB(String filePath) async {
               final dbPath = await getDatabasesPath();
               final path = join(dbPath, filePath);
 
@@ -136,7 +149,7 @@ jobs:
               ''');
             }
 
-            Future insertExpense(Expense expense) async {
+            Future<bool> insertExpense(Expense expense) async {
               final db = await instance.database;
               try {
                 await db.insert('expenses', expense.toMap(), conflictAlgorithm: ConflictAlgorithm.fail);
@@ -146,13 +159,13 @@ jobs:
               }
             }
 
-            Future> getAllExpenses() async {
+            Future<List<Expense>> getAllExpenses() async {
               final db = await instance.database;
               final result = await db.query('expenses', orderBy: 'date DESC');
               return result.map((json) => Expense.fromMap(json)).toList();
             }
 
-            Future clearAll() async {
+            Future<void> clearAll() async {
               final db = await instance.database;
               await db.delete('expenses');
             }
@@ -274,10 +287,10 @@ jobs:
                 context.findAncestorStateOfType<_HassalahAppState>();
 
             @override
-            State createState() => _HassalahAppState();
+            State<HassalahApp> createState() => _HassalahAppState();
           }
 
-          class _HassalahAppState extends State {
+          class _HassalahAppState extends State<HassalahApp> {
             int salaryStartDay = 25;
             String houseName = 'السعودية';
             String currency = 'ر.س';
@@ -319,12 +332,12 @@ jobs:
             const MainNavigationHolder({super.key});
 
             @override
-            State createState() => _MainNavigationHolderState();
+            State<MainNavigationHolder> createState() => _MainNavigationHolderState();
           }
 
-          class _MainNavigationHolderState extends State {
+          class _MainNavigationHolderState extends State<MainNavigationHolder> {
             int _currentIndex = 0;
-            List _expenses = [];
+            List<Expense> _expenses = [];
             bool _isLoading = true;
 
             @override
@@ -333,7 +346,7 @@ jobs:
               _loadExpenses();
             }
 
-            Future _loadExpenses() async {
+            Future<void> _loadExpenses() async {
               final list = await DatabaseHelper.instance.getAllExpenses();
               setState(() {
                 _expenses = list;
@@ -391,7 +404,7 @@ jobs:
                               ),
                             ),
                             const SizedBox(height: 12),
-                            DropdownButtonFormField(
+                            DropdownButtonFormField<String>(
                               value: selectedCategory,
                               decoration: InputDecoration(
                                 labelText: 'التصنيف',
@@ -547,21 +560,21 @@ jobs:
           }
 
           class HomeScreen extends StatefulWidget {
-            final List expenses;
+            final List<Expense> expenses;
             final bool isLoading;
             final VoidCallback onRefresh;
 
             const HomeScreen({super.key, required this.expenses, required this.isLoading, required this.onRefresh});
 
             @override
-            State createState() => _HomeScreenState();
+            State<HomeScreen> createState() => _HomeScreenState();
           }
 
-          class _HomeScreenState extends State {
+          class _HomeScreenState extends State<HomeScreen> {
             String _selectedCategory = 'الكل';
             String _searchQuery = '';
 
-            final List _categories = [
+            final List<String> _categories = [
               'الكل', 'مطاعم', 'قهوة', 'بنزين', 'سوبر ماركت', 'فواتير', 'تسوق', 'تحويلات', 'أخرى'
             ];
 
@@ -779,19 +792,19 @@ jobs:
           }
 
           class ReportsScreen extends StatefulWidget {
-            final List expenses;
+            final List<Expense> expenses;
             const ReportsScreen({super.key, required this.expenses});
 
             @override
-            State createState() => _ReportsScreenState();
+            State<ReportsScreen> createState() => _ReportsScreenState();
           }
 
-          class _ReportsScreenState extends State {
+          class _ReportsScreenState extends State<ReportsScreen> {
             int _selectedYear = 2026;
             int _selectedMonth = 8;
 
-            final List _years = [2026, 2025, 2024];
-            final List _months = [
+            final List<int> _years = [2026, 2025, 2024];
+            final List<String> _months = [
               'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
               'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'
             ];
@@ -804,7 +817,7 @@ jobs:
 
               double total = currentMonthExpenses.fold(0.0, (sum, i) => sum + i.amount);
 
-              Map categoryTotals = {};
+              Map<String, double> categoryTotals = {};
               for (var exp in currentMonthExpenses) {
                 categoryTotals[exp.category] = (categoryTotals[exp.category] ?? 0.0) + exp.amount;
               }
@@ -819,7 +832,7 @@ jobs:
               ];
 
               int colorIdx = 0;
-              List sections = [];
+              List<PieChartSectionData> sections = [];
               categoryTotals.forEach((cat, amt) {
                 sections.add(
                   PieChartSectionData(
@@ -1007,7 +1020,7 @@ jobs:
           }
 
           class BudgetScreen extends StatelessWidget {
-            final List expenses;
+            final List<Expense> expenses;
             const BudgetScreen({super.key, required this.expenses});
 
             @override
@@ -1131,10 +1144,10 @@ jobs:
             const SettingsScreen({super.key});
 
             @override
-            State createState() => _SettingsScreenState();
+            State<SettingsScreen> createState() => _SettingsScreenState();
           }
 
-          class _SettingsScreenState extends State {
+          class _SettingsScreenState extends State<SettingsScreen> {
             late TextEditingController _houseController;
 
             @override
