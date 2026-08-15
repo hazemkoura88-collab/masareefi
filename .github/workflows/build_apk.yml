@@ -24,16 +24,38 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Setup Fresh Clean Flutter Project
+      - name: Setup Fresh Clean Project
         run: |
           rm -rf lib android pubspec.yaml pubspec.lock .github/workflows/pubspec.yaml
           flutter create --org com.hassalah.app --platforms android .
 
-      - name: Add Required Dependencies
+      - name: Configure pubspec.yaml
         run: |
-          flutter pub add sqflite path intl permission_handler fl_chart
+          cat << 'EOF' > pubspec.yaml
+          name: hassalah
+          description: "تطبيق حصالة لإدارة المصاريف"
+          publish_to: 'none'
+          version: 1.0.0+1
 
-      - name: Configure Android Permissions and App Name
+          environment:
+            sdk: '>=3.0.0 <4.0.0'
+
+          dependencies:
+            flutter:
+              sdk: flutter
+            flutter_localizations:
+              sdk: flutter
+            intl: ^0.20.2
+            sqflite: ^2.3.0
+            path: ^1.9.0
+            permission_handler: ^11.3.1
+            fl_chart: ^0.68.0
+
+          flutter:
+            uses-material-design: true
+          EOF
+
+      - name: Configure Android Permissions & App Name
         run: |
           cat << 'EOF' > configure_android.py
           p = 'android/app/src/main/AndroidManifest.xml'
@@ -173,9 +195,6 @@ jobs:
           EOF
 
           cat << 'EOF' > lib/alrajhi_parser.dart
-          import 'dart:crypto';
-          import 'dart:convert';
-
           class TransactionParsed {
             final double amount;
             final String merchant;
@@ -235,7 +254,7 @@ jobs:
               }
 
               String category = _categorize(merchant, body);
-              String smsHash = md5.convert(utf8.encode(body + smsTime.toString())).toString();
+              String smsHash = '${body}_${smsTime.millisecondsSinceEpoch}'.hashCode.toString();
 
               return TransactionParsed(
                 amount: amount,
@@ -320,7 +339,6 @@ jobs:
                     primary: const Color(0xFFC85A32),
                     secondary: const Color(0xFFD46238),
                     surface: Colors.white,
-                    background: const Color(0xFFF8F5EE),
                   ),
                 ),
                 home: const MainNavigationHolder(),
