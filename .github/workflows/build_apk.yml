@@ -35,27 +35,17 @@ jobs:
 
       - name: Configure Android Permissions & App Name
         run: |
-          cat << 'EOF' > android/app/src/main/AndroidManifest.xml
-          
+          python3 -c "
+          p = 'android/app/src/main/AndroidManifest.xml'
+          with open(p, 'r') as f:
+              content = f.read()
+          perms = '''
               
               
               
               
-
-              
-                  
-                      
-                          
-                          
-                      
-                  
-              
-          
-          EOF
-
-      - name: Build Database and Logic Files
-        run: |
-          cat << 'EOF' > lib/database_helper.dart
+          '''
+          content = content.replace(' lib/database_helper.dart
           import 'dart:async';
           import 'package:path/path.dart';
           import 'package:sqflite/sqflite.dart';
