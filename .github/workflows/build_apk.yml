@@ -63,22 +63,69 @@ jobs:
               content = f.read()
 
           perms = '''
-              <uses-permission android:name="android.permission.RECEIVE_SMS"/>
-              <uses-permission android:name="android.permission.READ_SMS"/>
-              <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
-              <uses-permission android:name="android.permission.USE_FINGERPRINT"/>
+              
+              
+              
+              
           '''
 
-          content = content.replace('<application', perms + '    <application')
-          content = content.replace('android:label="masareefi"', 'android:label="حصّالة"')
-          content = content.replace('android:label="hassalah"', 'android:label="حصّالة"')
+          content = content.replace(' android/app/src/main/kotlin/com/hassalah/app/MainActivity.kt
+          package com.hassalah.app
 
-          with open(p, 'w', encoding='utf-8') as f:
-              f.write(content)
+          import android.database.Cursor
+          import android.net.Uri
+          import io.flutter.embedding.android.FlutterActivity
+          import io.flutter.embedding.engine.FlutterEngine
+          import io.flutter.plugin.common.MethodChannel
+
+          class MainActivity: FlutterActivity() {
+              private val CHANNEL = "com.hassalah.app/sms"
+
+              override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+                  super.configureFlutterEngine(flutterEngine)
+                  MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
+                      if (call.method == "getInboxSms") {
+                          try {
+                              val smsList = mutableListOf>()
+                              val cursor: Cursor? = contentResolver.query(
+                                  Uri.parse("content://sms/inbox"),
+                                  arrayOf("_id", "address", "body", "date"),
+                                  null,
+                                  null,
+                                  "date DESC"
+                              )
+                              cursor?.use {
+                                  val addressIdx = it.getColumnIndex("address")
+                                  val bodyIdx = it.getColumnIndex("body")
+                                  val dateIdx = it.getColumnIndex("date")
+
+                                  while (it.moveToNext()) {
+                                      val address = if (addressIdx != -1) it.getString(addressIdx) ?: "" else ""
+                                      val body = if (bodyIdx != -1) it.getString(bodyIdx) ?: "" else ""
+                                      val date = if (dateIdx != -1) it.getLong(dateIdx) else 0L
+
+                                      smsList.add(
+                                          mapOf(
+                                              "address" to address,
+                                              "body" to body,
+                                              "date" to date
+                                          )
+                                      )
+                                  }
+                              }
+                              result.success(smsList)
+                          } catch (e: Exception) {
+                              result.error("SMS_READ_FAILED", e.message, null)
+                          }
+                      } else {
+                          result.notImplemented()
+                      }
+                  }
+              }
+          }
           EOF
-          python3 configure_android.py
 
-      - name: Write Database Helper and AlRajhi Parser
+      - name: Write Database Helper and Bank SMS Parser
         run: |
           cat << 'EOF' > lib/database_helper.dart
           import 'dart:async';
@@ -106,7 +153,7 @@ jobs:
               required this.smsHash,
             });
 
-            Map<String, dynamic> toMap() {
+            Map toMap() {
               return {
                 'id': id,
                 'amount': amount,
@@ -119,7 +166,7 @@ jobs:
               };
             }
 
-            factory Expense.fromMap(Map<String, dynamic> map) {
+            factory Expense.fromMap(Map map) {
               return Expense(
                 id: map['id'],
                 amount: map['amount'],
@@ -139,13 +186,13 @@ jobs:
 
             DatabaseHelper._init();
 
-            Future<Database> get database async {
+            Future get database async {
               if (_database != null) return _database!;
               _database = await _initDB('hassalah.db');
               return _database!;
             }
 
-            Future<Database> _initDB(String filePath) async {
+            Future _initDB(String filePath) async {
               final dbPath = await getDatabasesPath();
               final path = join(dbPath, filePath);
 
@@ -171,7 +218,7 @@ jobs:
               ''');
             }
 
-            Future<bool> insertExpense(Expense expense) async {
+            Future insertExpense(Expense expense) async {
               final db = await instance.database;
               try {
                 await db.insert('expenses', expense.toMap(), conflictAlgorithm: ConflictAlgorithm.fail);
@@ -181,13 +228,13 @@ jobs:
               }
             }
 
-            Future<List<Expense>> getAllExpenses() async {
+            Future> getAllExpenses() async {
               final db = await instance.database;
               final result = await db.query('expenses', orderBy: 'date DESC');
               return result.map((json) => Expense.fromMap(json)).toList();
             }
 
-            Future<void> clearAll() async {
+            Future clearAll() async {
               final db = await instance.database;
               await db.delete('expenses');
             }
@@ -195,73 +242,68 @@ jobs:
           EOF
 
           cat << 'EOF' > lib/alrajhi_parser.dart
-          class TransactionParsed {
-            final double amount;
-            final String merchant;
-            final DateTime date;
-            final String cardLast4;
-            final String type;
-            final String category;
-            final String smsHash;
+          import 'database_helper.dart';
 
-            TransactionParsed({
-              required this.amount,
-              required this.merchant,
-              required this.date,
-              required this.cardLast4,
-              required this.type,
-              required this.category,
-              required this.smsHash,
-            });
-          }
-
-          class AlRajhiParser {
-            static TransactionParsed? parseSMS(String body, DateTime smsTime) {
-              if (!body.contains('الراجحي') && !body.contains('مبلغ') && !body.contains('بطاقة') && !body.contains('شراء')) {
-                return null;
-              }
+          class BankSmsParser {
+            static Expense? parseSMS(String body, DateTime smsTime) {
+              final textLower = body.toLowerCase();
+              final keywords = ['شراء', 'سحب', 'عملية', 'مدى', 'بطاقة', 'حوالة', 'خصم', 'دفع', 'مصرف', 'بنك', 'stc', 'urpay', 'rajhi', 'snb', 'alinma', 'riyad', 'sar', 'ر.س', 'ريال'];
+              
+              bool hasKeyword = keywords.any((k) => textLower.contains(k));
+              if (!hasKeyword) return null;
 
               double amount = 0.0;
-              String merchant = 'غير محدد';
+              final patterns = [
+                RegExp(r'(?:بقيمة|بمبلغ|بـ|مبلغ|دفع|قيمة)\s*(?:SAR|ر\.س|ريال)?\s*:?\s*([0-9]+(?:\.[0-9]+)?)', caseSensitive: false),
+                RegExp(r'(?:SAR|ر\.س|ريال)\s*([0-9]+(?:\.[0-9]+)?)', caseSensitive: false),
+                RegExp(r'([0-9]+(?:\.[0-9]+)?)\s*(?:SAR|ر\.س|ريال)', caseSensitive: false),
+              ];
+
+              for (final pat in patterns) {
+                final m = pat.firstMatch(body);
+                if (m != null) {
+                  final val = double.tryParse(m.group(1) ?? '0') ?? 0.0;
+                  if (val > 0) {
+                    amount = val;
+                    break;
+                  }
+                }
+              }
+
+              if (amount <= 0) return null;
+
+              String merchant = 'متجر غير محدد';
+              final mReg = RegExp(r'(?:لدى|من متجر|في متجر|إلى|لـ|لدى متجر)\s+([^\n\r,\.]+?)(?=\s+(?:عبر|من|في|بتاريخ|بقيمة|بمبلغ|بطاقة|الساعة|الرصيد|\.|$))');
+              final mMatch = mReg.firstMatch(body);
+              if (mMatch != null) {
+                merchant = mMatch.group(1)!.trim();
+              } else if (body.contains('سحب نقدي') || body.contains('صراف')) {
+                merchant = 'صراف آلي (سحب نقدي)';
+              } else if (body.contains('حوالة') || body.contains('تحويل')) {
+                merchant = 'حوالة مصرفية';
+              } else if (body.contains('فاتورة') || body.contains('سداد')) {
+                merchant = 'سداد فاتورة';
+              }
+
+              merchant = merchant.replaceAll(RegExp(r'^(متجر|شركة|مؤسسة)\s+'), '').trim();
+              if (merchant.length > 35) merchant = merchant.substring(0, 35);
+
               String cardLast4 = '0000';
-              String type = 'شراء';
-
-              RegExp amountReg = RegExp(r'(?:بقيمة|بمبلغ)\s+([0-9]+(?:\.[0-9]+)?)\s*(?:SAR|ر.س)?');
-              var amountMatch = amountReg.firstMatch(body);
-              if (amountMatch != null) {
-                amount = double.tryParse(amountMatch.group(1) ?? '0') ?? 0.0;
-              } else {
-                return null;
-              }
-
-              RegExp cardReg = RegExp(r'\(([0-9]{4})\)');
-              var cardMatch = cardReg.firstMatch(body);
-              if (cardMatch != null) {
-                cardLast4 = cardMatch.group(1) ?? '0000';
-              }
-
-              if (body.contains('شراء') || body.contains('مدى')) {
-                type = 'شراء';
-                RegExp merchantReg = RegExp(r'لدى\s+([^\n\r]+?)(?=\s+في|\s+بقيمة|\.$|$)');
-                var mMatch = merchantReg.firstMatch(body);
-                if (mMatch != null) merchant = mMatch.group(1)!.trim();
-              } else if (body.contains('سحب نقدي')) {
-                type = 'سحب';
-                merchant = 'صراف آلي';
-              } else if (body.contains('تحويل')) {
-                type = 'تحويلات';
-                merchant = 'تحويل صادر';
+              final cardReg = RegExp(r'(?:\(|\*|بطاقة\s*|مدى\s*|حساب\s*)([0-9]{4})');
+              final cMatch = cardReg.firstMatch(body);
+              if (cMatch != null) {
+                cardLast4 = cMatch.group(1) ?? '0000';
               }
 
               String category = _categorize(merchant, body);
-              String smsHash = '${body}_${smsTime.millisecondsSinceEpoch}'.hashCode.toString();
+              String smsHash = '${amount}_${merchant}_${smsTime.millisecondsSinceEpoch}'.hashCode.toString();
 
-              return TransactionParsed(
+              return Expense(
                 amount: amount,
                 merchant: merchant,
                 date: smsTime,
                 cardLast4: cardLast4,
-                type: type,
+                type: body.contains('سحب') ? 'سحب نقدي' : 'شراء',
                 category: category,
                 smsHash: smsHash,
               );
@@ -270,13 +312,14 @@ jobs:
             static String _categorize(String merchant, String body) {
               String text = (merchant + " " + body).toLowerCase();
 
-              if (text.contains('قهوة') || text.contains('كافيه') || text.contains('starbucks') || text.contains('barns')) return 'قهوة';
-              if (text.contains('مطعم') || text.contains('mcdonalds') || text.contains('albaik') || text.contains('شاورما') || text.contains('برجر')) return 'مطاعم';
-              if (text.contains('بنزين') || text.contains('الدريس') || text.contains('ساسكو') || text.contains('محطة')) return 'بنزين';
-              if (text.contains('بندة') || text.contains('العثيم') || text.contains('سوبرماركت') || text.contains('تموينات') || text.contains('لولو')) return 'سوبر ماركت';
-              if (text.contains('فاتورة') || text.contains('stc') || text.contains('موبايلي') || text.contains('كهرباء') || text.contains('مياه')) return 'فواتير';
-              if (text.contains('تحويل')) return 'تحويلات';
-              if (text.contains('amazon') || text.contains('noon') || text.contains('نون') || text.contains('امازون') || text.contains('زارا')) return 'تسوق';
+              if (text.contains('قهوة') || text.contains('كافيه') || text.contains('starbucks') || text.contains('barns') || text.contains('coffee') || text.contains('cafe') || text.contains('دانكن') || text.contains('dunkin') || text.contains('كيان') || text.contains('بارنز')) return 'قهوة';
+              if (text.contains('مطعم') || text.contains('mcdonalds') || text.contains('albaik') || text.contains('شاورما') || text.contains('برجر') || text.contains('burger') || text.contains('pizza') || text.contains('بيتزا') || text.contains('بيك') || text.contains('ماك') || text.contains('كنتاكي') || text.contains('وجبات')) return 'مطاعم';
+              if (text.contains('بنزين') || text.contains('الدريس') || text.contains('ساسكو') || text.contains('محطة') || text.contains('وقود') || text.contains('نفط') || text.contains('petrol')) return 'بنزين';
+              if (text.contains('بندة') || text.contains('العثيم') || text.contains('سوبرماركت') || text.contains('تموينات') || text.contains('لولو') || text.contains('lulu') || text.contains('panda') || text.contains('carrefour') || text.contains('كارفور') || text.contains('بقالة')) return 'سوبر ماركت';
+              if (text.contains('فاتورة') || text.contains('stc') || text.contains('موبايلي') || text.contains('كهرباء') || text.contains('مياه') || text.contains('زين') || text.contains('سداد')) return 'فواتير';
+              if (text.contains('تحويل') || text.contains('حوالة') || text.contains('transfer')) return 'تحويلات';
+              if (text.contains('amazon') || text.contains('noon') || text.contains('نون') || text.contains('امازون') || text.contains('زارا') || text.contains('zara') || text.contains('shein') || text.contains('نمشي') || text.contains('تسوق')) return 'تسوق';
+              if (text.contains('صيدلية') || text.contains('نهدي') || text.contains('pharmacy') || text.contains('مستشفى') || text.contains('دواء')) return 'صحة وطب';
               return 'أخرى';
             }
           }
@@ -286,6 +329,7 @@ jobs:
         run: |
           cat << 'EOF' > lib/main.dart
           import 'package:flutter/material.dart';
+          import 'package:flutter/services.dart';
           import 'package:flutter_localizations/flutter_localizations.dart';
           import 'package:intl/intl.dart';
           import 'package:fl_chart/fl_chart.dart';
@@ -306,10 +350,10 @@ jobs:
                 context.findAncestorStateOfType<_HassalahAppState>();
 
             @override
-            State<HassalahApp> createState() => _HassalahAppState();
+            State createState() => _HassalahAppState();
           }
 
-          class _HassalahAppState extends State<HassalahApp> {
+          class _HassalahAppState extends State {
             int salaryStartDay = 25;
             String walletName = 'المحفظة الشخصية';
             String currency = 'ر.س';
@@ -359,6 +403,43 @@ jobs:
             }
           }
 
+          class SmsService {
+            static const MethodChannel _channel = MethodChannel('com.hassalah.app/sms');
+
+            static Future syncBankSms() async {
+              final status = await Permission.sms.request();
+              if (!status.isGranted) {
+                return -1;
+              }
+
+              try {
+                final List? rawMessages = await _channel.invokeMethod>('getInboxSms');
+                if (rawMessages == null || rawMessages.isEmpty) {
+                  return 0;
+                }
+
+                int newInserted = 0;
+                for (final raw in rawMessages) {
+                  final map = Map.from(raw as Map);
+                  final String body = map['body'] ?? '';
+                  final int dateMs = map['date'] ?? DateTime.now().millisecondsSinceEpoch;
+                  final DateTime smsTime = DateTime.fromMillisecondsSinceEpoch(dateMs);
+
+                  final Expense? expense = BankSmsParser.parseSMS(body, smsTime);
+                  if (expense != null) {
+                    final inserted = await DatabaseHelper.instance.insertExpense(expense);
+                    if (inserted) {
+                      newInserted++;
+                    }
+                  }
+                }
+                return newInserted;
+              } catch (e) {
+                return 0;
+              }
+            }
+          }
+
           class SavingsBox {
             final String name;
             final double current;
@@ -379,15 +460,15 @@ jobs:
             const MainTabControllerScreen({super.key});
 
             @override
-            State<MainTabControllerScreen> createState() => _MainTabControllerScreenState();
+            State createState() => _MainTabControllerScreenState();
           }
 
-          class _MainTabControllerScreenState extends State<MainTabControllerScreen> {
+          class _MainTabControllerScreenState extends State {
             int _currentTab = 0;
-            List<Expense> _expenses = [];
+            List _expenses = [];
             bool _isLoading = true;
 
-            final List<SavingsBox> _savingsBoxes = [
+            final List _savingsBoxes = [
               SavingsBox(name: 'طوارئ وأمان', current: 3500, target: 10000, emoji: '🛡️', color: const Color(0xFF0C3B2E)),
               SavingsBox(name: 'سفر وإجازة', current: 2400, target: 6000, emoji: '✈️', color: const Color(0xFF0284C7)),
               SavingsBox(name: 'تجديد سيارة', current: 1200, target: 5000, emoji: '🚗', color: const Color(0xFFE5A93C)),
@@ -396,15 +477,59 @@ jobs:
             @override
             void initState() {
               super.initState();
-              _loadData();
+              _initAndSync();
             }
 
-            Future<void> _loadData() async {
+            Future _initAndSync() async {
+              await _loadData();
+              await _syncSmsSilently();
+            }
+
+            Future _loadData() async {
               final data = await DatabaseHelper.instance.getAllExpenses();
               setState(() {
                 _expenses = data;
                 _isLoading = false;
               });
+            }
+
+            Future _syncSmsSilently() async {
+              int res = await SmsService.syncBankSms();
+              if (res > 0) {
+                await _loadData();
+              }
+            }
+
+            Future _handleManualSync() async {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('جاري فحص وتحديث رسائل البنوك... ⏳')),
+              );
+
+              int count = await SmsService.syncBankSms();
+              await _loadData();
+
+              if (count == -1) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('يرجى منح إذن قراءة الرسائل لمزامنة المصاريف تلقائياً ⚠️'),
+                    backgroundColor: Colors.orange,
+                  ),
+                );
+              } else if (count > 0) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('تم استيراد $count عملية جديدة بنجاح من رسائل البنك 🎉'),
+                    backgroundColor: const Color(0xFF0C3B2E),
+                  ),
+                );
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('جميع رسائل البنك محدثة ومسجلة بالفعل ✔️'),
+                    backgroundColor: Color(0xFF0C3B2E),
+                  ),
+                );
+              }
             }
 
             void _showAddModal() {
@@ -437,7 +562,7 @@ jobs:
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
                                 const Text(
-                                  'إضافة مصروف جديد 💳',
+                                  'إضافة مصروف يدوي 💳',
                                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF0C3B2E)),
                                 ),
                                 IconButton(
@@ -450,7 +575,7 @@ jobs:
                             TextField(
                               controller: merchantCtrl,
                               decoration: InputDecoration(
-                                labelText: 'المتجر أو البيان (مثل: كافيه، بندة، وقود...)',
+                                labelText: 'المتجر أو البيان (كافيه، بنزين، بندة...)',
                                 filled: true,
                                 fillColor: const Color(0xFFF3F7F5),
                                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
@@ -468,7 +593,7 @@ jobs:
                               ),
                             ),
                             const SizedBox(height: 12),
-                            DropdownButtonFormField<String>(
+                            DropdownButtonFormField(
                               value: selectedCategory,
                               decoration: InputDecoration(
                                 labelText: 'التصنيف',
@@ -476,7 +601,7 @@ jobs:
                                 filled: true,
                                 fillColor: const Color(0xFFF3F7F5),
                               ),
-                              items: ['مطاعم', 'قهوة', 'بنزين', 'سوبر ماركت', 'فواتير', 'تسوق', 'تحويلات', 'أخرى']
+                              items: ['مطاعم', 'قهوة', 'بنزين', 'سوبر ماركت', 'فواتير', 'تسوق', 'تحويلات', 'صحة وطب', 'أخرى']
                                   .map((c) => DropdownMenuItem(value: c, child: Text(c)))
                                   .toList(),
                               onChanged: (val) {
@@ -539,7 +664,7 @@ jobs:
                       expenses: _expenses,
                       isLoading: _isLoading,
                       onAddPressed: _showAddModal,
-                      onRefresh: _loadData,
+                      onRefresh: _handleManualSync,
                     ),
                     ReportsScreenTab(expenses: _expenses),
                     BudgetScreenTab(
@@ -611,7 +736,7 @@ jobs:
           }
 
           class HomeScreenTab extends StatefulWidget {
-            final List<Expense> expenses;
+            final List expenses;
             final bool isLoading;
             final VoidCallback onAddPressed;
             final VoidCallback onRefresh;
@@ -625,15 +750,15 @@ jobs:
             });
 
             @override
-            State<HomeScreenTab> createState() => _HomeScreenTabState();
+            State createState() => _HomeScreenTabState();
           }
 
-          class _HomeScreenTabState extends State<HomeScreenTab> {
+          class _HomeScreenTabState extends State {
             String _selectedCategory = 'الكل';
             String _searchQuery = '';
 
-            final List<String> _categories = [
-              'الكل', 'مطاعم', 'قهوة', 'بنزين', 'سوبر ماركت', 'فواتير', 'تسوق', 'تحويلات', 'أخرى'
+            final List _categories = [
+              'الكل', 'مطاعم', 'قهوة', 'بنزين', 'سوبر ماركت', 'فواتير', 'تسوق', 'تحويلات', 'صحة وطب', 'أخرى'
             ];
 
             @override
@@ -699,21 +824,16 @@ jobs:
                             ],
                           ),
                           IconButton(
-                            icon: const Icon(Icons.sync_rounded, color: Color(0xFF0C3B2E), size: 26),
-                            onPressed: () {
-                              widget.onRefresh();
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('تمت مزامنة وتحديث العمليات بنجاح 🔄')),
-                              );
-                            },
-                            tooltip: 'مزامنة وتحديث',
+                            icon: const Icon(Icons.sync_rounded, color: Color(0xFF0C3B2E), size: 28),
+                            onPressed: widget.onRefresh,
+                            tooltip: 'مزامنة وقراءة الرسائل',
                           ),
                         ],
                       ),
                       const SizedBox(height: 18),
 
                       Container(
-                        padding: const EdgeInsets.all(22),
+                        padding: const EdgeInsets.all(20),
                         decoration: BoxDecoration(
                           gradient: const LinearGradient(
                             colors: [Color(0xFF08261E), Color(0xFF0C3B2E), Color(0xFF185343)],
@@ -735,9 +855,13 @@ jobs:
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                const Text(
-                                  'إجمالي المصروف الشهري',
-                                  style: TextStyle(color: Color(0xFFB4D2C8), fontSize: 14),
+                                const Expanded(
+                                  child: Text(
+                                    'المصروف الشهري',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(color: Color(0xFFB4D2C8), fontSize: 14),
+                                  ),
                                 ),
                                 Container(
                                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -779,38 +903,45 @@ jobs:
                             const SizedBox(height: 18),
 
                             Container(
-                              padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
+                              padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
                               decoration: BoxDecoration(
                                 color: Colors.white.withOpacity(0.08),
                                 borderRadius: BorderRadius.circular(14),
                               ),
                               child: Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceAround,
                                 children: [
-                                  Column(
-                                    children: [
-                                      const Text('مصاريف اليوم', style: TextStyle(color: Color(0xFFB4D2C8), fontSize: 12)),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        '${todayExp.toStringAsFixed(1)} ر.س',
-                                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
-                                      ),
-                                    ],
+                                  Expanded(
+                                    child: Column(
+                                      children: [
+                                        const Text('مصاريف اليوم', style: TextStyle(color: Color(0xFFB4D2C8), fontSize: 12)),
+                                        const SizedBox(height: 4),
+                                        FittedBox(
+                                          child: Text(
+                                            '${todayExp.toStringAsFixed(1)} ر.س',
+                                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                                   ),
                                   Container(width: 1, height: 28, color: Colors.white.withOpacity(0.15)),
-                                  Column(
-                                    children: [
-                                      const Text('المتبقي من الميزانية', style: TextStyle(color: Color(0xFFB4D2C8), fontSize: 12)),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        '${remaining.toStringAsFixed(1)} ر.س',
-                                        style: TextStyle(
-                                          color: remaining >= 0 ? const Color(0xFF6EE7B7) : const Color(0xFFFCA5A5),
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 15,
+                                  Expanded(
+                                    child: Column(
+                                      children: [
+                                        const Text('المتبقي من الميزانية', style: TextStyle(color: Color(0xFFB4D2C8), fontSize: 12)),
+                                        const SizedBox(height: 4),
+                                        FittedBox(
+                                          child: Text(
+                                            '${remaining.toStringAsFixed(1)} ر.س',
+                                            style: TextStyle(
+                                              color: remaining >= 0 ? const Color(0xFF6EE7B7) : const Color(0xFFFCA5A5),
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 15,
+                                            ),
+                                          ),
                                         ),
-                                      ),
-                                    ],
+                                      ],
+                                    ),
                                   ),
                                 ],
                               ),
@@ -898,18 +1029,28 @@ jobs:
                             border: Border.all(color: const Color(0xFFE2EBE6)),
                           ),
                           child: Column(
-                            children: const [
-                              Icon(Icons.account_balance_wallet_outlined, size: 54, color: Color(0xFFCBD5E0)),
-                              SizedBox(height: 12),
-                              Text(
+                            children: [
+                              const Icon(Icons.account_balance_wallet_outlined, size: 54, color: Color(0xFFCBD5E0)),
+                              const SizedBox(height: 12),
+                              const Text(
                                 'لا توجد عمليات مسجلة بعد',
                                 style: TextStyle(color: Color(0xFF4A5568), fontWeight: FontWeight.bold, fontSize: 15),
                               ),
-                              SizedBox(height: 4),
-                              Text(
-                                'اضغط على زر (+) بالأسفل لإضافة عملية يدوياً أو استقبل رسائل البنك',
+                              const SizedBox(height: 6),
+                              const Text(
+                                'اضغط على زر (🔄) بالأعلى لقراءة رسائل البنوك فوراً أو زر (+) لإضافة عملية يدوياً',
                                 textAlign: TextAlign.center,
                                 style: TextStyle(color: Color(0xFF718096), fontSize: 12),
+                              ),
+                              const SizedBox(height: 16),
+                              ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF0C3B2E),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                ),
+                                icon: const Icon(Icons.sync, color: Colors.white, size: 18),
+                                label: const Text('قراءة رسائل البنك الآن 📥', style: TextStyle(color: Colors.white)),
+                                onPressed: widget.onRefresh,
                               ),
                             ],
                           ),
@@ -974,25 +1115,26 @@ jobs:
                 case 'فواتير': return '⚡';
                 case 'تحويلات': return '💸';
                 case 'تسوق': return '🛍️';
+                case 'صحة وطب': return '💊';
                 default: return '🪙';
               }
             }
           }
 
           class ReportsScreenTab extends StatefulWidget {
-            final List<Expense> expenses;
+            final List expenses;
             const ReportsScreenTab({super.key, required this.expenses});
 
             @override
-            State<ReportsScreenTab> createState() => _ReportsScreenTabState();
+            State createState() => _ReportsScreenTabState();
           }
 
-          class _ReportsScreenTabState extends State<ReportsScreenTab> {
+          class _ReportsScreenTabState extends State {
             int _selectedYear = 2026;
             int _selectedMonth = 8;
 
-            final List<int> _years = [2026, 2025, 2024];
-            final List<String> _months = [
+            final List _years = [2026, 2025, 2024];
+            final List _months = [
               'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
               'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'
             ];
@@ -1005,7 +1147,7 @@ jobs:
 
               double total = filtered.fold(0.0, (sum, i) => sum + i.amount);
 
-              Map<String, double> catTotals = {};
+              Map catTotals = {};
               for (var exp in filtered) {
                 catTotals[exp.category] = (catTotals[exp.category] ?? 0.0) + exp.amount;
               }
@@ -1020,7 +1162,7 @@ jobs:
               ];
 
               int idx = 0;
-              List<PieChartSectionData> sections = [];
+              List sections = [];
               catTotals.forEach((k, v) {
                 sections.add(PieChartSectionData(
                   value: v,
@@ -1201,8 +1343,8 @@ jobs:
           }
 
           class BudgetScreenTab extends StatelessWidget {
-            final List<Expense> expenses;
-            final List<SavingsBox> savingsBoxes;
+            final List expenses;
+            final List savingsBoxes;
 
             const BudgetScreenTab({
               super.key,
@@ -1409,7 +1551,7 @@ jobs:
               );
             }
 
-            Widget _buildSettingsGroup(String title, List<Widget> children) {
+            Widget _buildSettingsGroup(String title, List children) {
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
